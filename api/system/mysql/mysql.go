@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"github.com/getCompassUtils/go_base_frame/api/system/functions"
@@ -16,14 +17,19 @@ import (
 // создания подключений, осуществления запросов к таблицам
 // -------------------------------------------------------
 
+// таймауты нужны, чтобы зависший запрос не занял надолго подключение к базе.
+// подключений ограниченное количество, а значит есть риск создать очередь запросов из-за зависших подключений
+const pingTimeout = 50 * time.Millisecond // таймаут для пинга
+const QueryTimeout = 5 * time.Second      // таймаут для запросов
+
 // ConnectionPoolItem структура объекта подключения к базе данных
 type ConnectionPoolItem struct {
-	Connection *sql.DB
-	createdAt  int64
+	ConnectionPool *sql.DB
+	createdAt      int64
 }
 
 // объявляем хранилище
-var mysqlConnectionPool = sync.Map{}
+var mysqlConnectionPoolList = sync.Map{}
 
 // TransactionStruct структура транзакции
 type TransactionStruct struct {
@@ -39,79 +45,101 @@ type queryStruct struct {
 	err        error
 }
 
-// внутренний тип - счетчик ошибок
-type countError struct {
-	Count    int
-	MaxCount int
-	TimeWait int
-}
-
 // -------------------------------------------------------
 // mysql
 // -------------------------------------------------------
 
-// ReplaceConnection обновить объект подключения
+// ReplaceConnection обновить объект пула подключений
 func ReplaceConnection(db string, conn *sql.DB) {
 
 	// заносим подключение в кэш
 	connectionPoolItem := ConnectionPoolItem{
-		Connection: conn,
-		createdAt:  functions.GetCurrentTimeStamp(),
+		ConnectionPool: conn,
+		createdAt:      functions.GetCurrentTimeStamp(),
 	}
 
 	// перезаписываем объект подключения
-	connectionPoolItem.Connection = conn
-	mysqlConnectionPool.Store(db, &connectionPoolItem)
+	connectionPoolItem.ConnectionPool = conn
+	mysqlConnectionPoolList.Store(db, &connectionPoolItem)
 }
 
-// GetMysqlConnection получаем конфигурацию main
-func GetMysqlConnection(db string, host string, user string, pass string, maxConnections int, isSsl bool, isNeedReconnect bool) *ConnectionPoolItem {
+// CreateMysqlConnection создаем mysql подключение без сохранения в мапу
+func CreateMysqlConnection(ctx context.Context, db string, host string, user string, pass string, maxConnections int, isSsl bool) (*ConnectionPoolItem, error) {
+
+	// cоздаем пул соединений с mysql
+	mysqlConnectionPool, err := openMysqlConnectionPool(db, host, user, pass, maxConnections, isSsl)
+
+	// !!! СОЗДАНИЕ ПУЛА НЕ ПРОВЕРЯЕТ НАЛИЧИЕ СОЕДИНЕНИЯ
+	if err != nil {
+
+		log.Errorf("error when creating db connection pool `%s`, err: %s", db, err.Error())
+		return nil, err
+	}
+
+	// устанавливаем первое соединение, сразу проверяя, что база доступна
+	ctx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+	err = mysqlConnectionPool.ConnectionPool.PingContext(ctx)
+
+	if err != nil {
+
+		log.Errorf("error when connect to database `%s`, err: %s", db, err.Error())
+		return nil, err
+	}
+
+	log.Infof("Открыл соединение к базе %s", db)
+	return mysqlConnectionPool, nil
+}
+
+// GetMysqlConnection получаем хранимое mysql подключение
+func GetMysqlConnection(ctx context.Context, db string, host string, user string, pass string, maxConnections int, isSsl bool) (*ConnectionPoolItem, error) {
 
 	uniqueKey := host + "-" + db
-	connectionPoolItem, exist := mysqlConnectionPool.Load(uniqueKey)
+	mysqlConnectionPool, exist := mysqlConnectionPoolList.Load(uniqueKey)
 
-	// если не было коннекта - создаем
-	if exist && !isNeedReconnect {
-		return connectionPoolItem.(*ConnectionPoolItem)
+	// если не было пула соединений - создаем
+	if exist {
+		return mysqlConnectionPool.(*ConnectionPoolItem), nil
 	}
 
-	count := 0
+	mysqlConnectionPool, err := openMysqlConnectionPool(db, host, user, pass, maxConnections, isSsl)
 
-	// пойдем в цикле обращаться, чтобы в случае ошибки можно было переотправить запрос
-	for count <= 3 {
+	// !!! СОЗДАНИЕ ПУЛА НЕ ПРОВЕРЯЕТ НАЛИЧИЕ СОЕДИНЕНИЯ
+	if err != nil {
 
-		mysqlConnection, err := openMysqlConnection(db, host, user, pass, maxConnections, isSsl)
-		if err != nil {
-
-			// увеличим счетчик ошибок на один
-			count++
-
-			log.Errorf("error when connect to database `%s`, err: %s", db, err.Error())
-
-			// подождем 20 миллисекунд
-			time.Sleep(time.Millisecond * 20)
-			continue
-		}
-
-		log.Infof("Открыл соединение к базе %s", db)
-		connectionPoolItem, _ = mysqlConnectionPool.LoadOrStore(uniqueKey, mysqlConnection)
-		return connectionPoolItem.(*ConnectionPoolItem)
+		log.Errorf("error when creating db connection pool `%s`, err: %s", db, err.Error())
+		return nil, err
 	}
-	return nil
+
+	// устанавливаем первое соединение, сразу проверяя, что база доступна
+	ctx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+	err = mysqlConnectionPool.(*ConnectionPoolItem).ConnectionPool.PingContext(ctx)
+
+	if err != nil {
+
+		log.Errorf("error when connect to database `%s`, err: %s", db, err.Error())
+		return nil, err
+	}
+
+	log.Infof("Открыл соединение к базе %s", db)
+	mysqlConnectionPoolList.Store(uniqueKey, mysqlConnectionPool)
+
+	return mysqlConnectionPool.(*ConnectionPoolItem), nil
 }
 
 // открываем соединение
-func openMysqlConnection(db string, host string, user string, pass string, maxConnections int, isSsl bool) (*ConnectionPoolItem, error) {
+func openMysqlConnectionPool(db string, host string, user string, pass string, maxConnections int, isSsl bool) (*ConnectionPoolItem, error) {
 
-	connection, err := connectToDb(db, host, user, pass, maxConnections, isSsl)
+	connectionPool, err := connectToDb(db, host, user, pass, maxConnections, isSsl)
 
 	// заносим подключение в кэш
-	connectionItem := ConnectionPoolItem{
-		Connection: connection,
-		createdAt:  functions.GetCurrentTimeStamp(),
+	connectionPoolItem := ConnectionPoolItem{
+		ConnectionPool: connectionPool,
+		createdAt:      functions.GetCurrentTimeStamp(),
 	}
 
-	return &connectionItem, err
+	return &connectionPoolItem, err
 }
 
 // подключаемся в базе
@@ -133,16 +161,40 @@ func connectToDb(db string, host string, user string, pass string, maxConnection
 	}
 
 	// ограничиваем кол-во одновременно открытых соединений с базой данных
-	connection.SetMaxIdleConns(maxConnections)
 	connection.SetMaxOpenConns(maxConnections)
+	connection.SetMaxIdleConns(maxConnections)
 	connection.SetConnMaxLifetime(time.Minute * 1)
 	return connection, nil
+}
+
+// RemoveMysqlConnectionPool удаляем пул соединений для базы и хоста
+func RemoveMysqlConnectionPool(db string, host string) error {
+
+	uniqueKey := host + "-" + db
+
+	item, exist := mysqlConnectionPoolList.Load(uniqueKey)
+
+	// если не было пула соединений - то и закрывать нечего
+	if !exist {
+		return nil
+	}
+	mysqlConnectionPool := item.(*ConnectionPoolItem)
+
+	// закрываем соединение
+	err := mysqlConnectionPool.Close()
+
+	if err != nil {
+		return fmt.Errorf("cant close db on host %s for db %s", host, db)
+	}
+
+	mysqlConnectionPoolList.Delete(uniqueKey)
+	return nil
 }
 
 // Ping функция для пинга соединения
 func (connectionItem *ConnectionPoolItem) Ping() error {
 
-	return connectionItem.Connection.Ping()
+	return connectionItem.ConnectionPool.Ping()
 }
 
 // -------------------------------------------------------
@@ -150,10 +202,13 @@ func (connectionItem *ConnectionPoolItem) Ping() error {
 // -------------------------------------------------------
 
 // GetAll получаем массив из запроса
-func (connectionItem *ConnectionPoolItem) GetAll(query string, args ...interface{}) (map[int]map[string]string, error) {
+func (connectionItem *ConnectionPoolItem) GetAll(ctx context.Context, query string, args ...interface{}) (map[int]map[string]string, error) {
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// осуществляем запрос
-	queryItem, err := connectionItem.sendQueryForFormat(query, args...)
+	queryItem, err := connectionItem.sendQueryForFormat(queryContext, query, args...)
 	if err != nil {
 
 		log.Errorf("unable send query, error: %v", err)
@@ -165,10 +220,13 @@ func (connectionItem *ConnectionPoolItem) GetAll(query string, args ...interface
 }
 
 // FetchQuery получаем ответ после запроса
-func (connectionItem *ConnectionPoolItem) FetchQuery(query string, args ...interface{}) (map[string]string, error) {
+func (connectionItem *ConnectionPoolItem) FetchQuery(ctx context.Context, query string, args ...interface{}) (map[string]string, error) {
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// осуществляем запрос
-	queryItem, err := connectionItem.sendQueryForFormat(query, args...)
+	queryItem, err := connectionItem.sendQueryForFormat(queryContext, query, args...)
 	if err != nil {
 
 		log.Errorf("unable send query, error: %v", err)
@@ -180,10 +238,13 @@ func (connectionItem *ConnectionPoolItem) FetchQuery(query string, args ...inter
 }
 
 // FetchList получаем одномерный массив из запроса
-func (connectionItem *ConnectionPoolItem) FetchList(query string, args ...interface{}) ([]string, error) {
+func (connectionItem *ConnectionPoolItem) FetchList(ctx context.Context, query string, args ...interface{}) ([]string, error) {
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// осуществляем запрос
-	queryItem, err := connectionItem.sendQueryForFormat(query, args...)
+	queryItem, err := connectionItem.sendQueryForFormat(queryContext, query, args...)
 	if err != nil {
 
 		log.Errorf("unable send query, error: %v", err)
@@ -197,11 +258,11 @@ func (connectionItem *ConnectionPoolItem) FetchList(query string, args ...interf
 // Close закрываем соединение
 func (connectionItem *ConnectionPoolItem) Close() error {
 
-	return connectionItem.Connection.Close()
+	return connectionItem.ConnectionPool.Close()
 }
 
 // Insert осуществляем запрос вставки
-func (connectionItem *ConnectionPoolItem) Insert(tableName string, insert map[string]interface{}, isIgnore bool) (int64, error) {
+func (connectionItem *ConnectionPoolItem) Insert(ctx context.Context, tableName string, insert map[string]interface{}, isIgnore bool) (int64, error) {
 
 	var keys, valueKeys string
 	var values []interface{}
@@ -220,7 +281,11 @@ func (connectionItem *ConnectionPoolItem) Insert(tableName string, insert map[st
 		ignore = "IGNORE "
 	}
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
-	res, err := connectionItem.Connection.Exec(query, values...)
+
+	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+
+	res, err := connectionItem.ConnectionPool.ExecContext(queryCtx, query, values...)
 	if err != nil {
 		return 0, fmt.Errorf("query: %s, error: %v", query, err)
 	}
@@ -229,7 +294,7 @@ func (connectionItem *ConnectionPoolItem) Insert(tableName string, insert map[st
 }
 
 // InsertOrUpdate осуществляем запрос insert or update
-func (connectionItem *ConnectionPoolItem) InsertOrUpdate(tableName string, insert map[string]interface{}) error {
+func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, tableName string, insert map[string]interface{}) error {
 
 	var keys, valueKeys, updateKeys string
 	var values []interface{}
@@ -248,7 +313,11 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(tableName string, inser
 
 	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) on duplicate key update %s;",
 		tableName, keys, valueKeys, updateKeys)
-	_, err := connectionItem.Connection.Exec(query, values...)
+
+	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+
+	_, err := connectionItem.ConnectionPool.ExecContext(queryCtx, query, values...)
 	if err != nil {
 		return fmt.Errorf("query: %s, error: %v", query, err)
 	}
@@ -257,10 +326,13 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(tableName string, inser
 }
 
 // Update осуществляем запрос update
-func (connectionItem *ConnectionPoolItem) Update(query string, args ...interface{}) (int64, error) {
+func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
+
+	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// проверяем соединение и осуществляем запрос
-	res, err := connectionItem.Connection.Exec(query, args...)
+	res, err := connectionItem.ConnectionPool.ExecContext(queryCtx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("query: %s, error: %v", query, err)
 	}
@@ -270,10 +342,10 @@ func (connectionItem *ConnectionPoolItem) Update(query string, args ...interface
 }
 
 // Query осуществляем запрос
-func (connectionItem *ConnectionPoolItem) Query(query string, args ...interface{}) error {
+func (connectionItem *ConnectionPoolItem) Query(ctx context.Context, query string, args ...interface{}) error {
 
 	// проверяем соединение и осуществляем запрос
-	_, err := connectionItem.Connection.Exec(query, args...)
+	_, err := connectionItem.ConnectionPool.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query: %s, error: %v", query, err)
 	}
@@ -282,7 +354,7 @@ func (connectionItem *ConnectionPoolItem) Query(query string, args ...interface{
 }
 
 // InsertArray функция для вставки массива записей в базу
-func (connectionItem *ConnectionPoolItem) InsertArray(tableName string, columnList []string, insertDataList [][]interface{}) error {
+func (connectionItem *ConnectionPoolItem) InsertArray(ctx context.Context, tableName string, columnList []string, insertDataList [][]interface{}) error {
 
 	var columnString, valueString string
 	for _, column := range columnList {
@@ -305,17 +377,21 @@ func (connectionItem *ConnectionPoolItem) InsertArray(tableName string, columnLi
 	valueString = valueString[:len(valueString)-2]
 
 	query := fmt.Sprintf("INSERT IGNORE INTO `%s` (%s) VALUES %s", tableName, columnString, valueString)
-	return connectionItem.Query(query, valueList...)
+
+	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+
+	return connectionItem.Query(queryCtx, query, valueList...)
 }
 
 // осуществляем запрос, возвращаем объект для форматирования ответа
-func (connectionItem *ConnectionPoolItem) sendQueryForFormat(query string, args ...interface{}) (*queryStruct, error) {
+func (connectionItem *ConnectionPoolItem) sendQueryForFormat(ctx context.Context, query string, args ...interface{}) (*queryStruct, error) {
 
 	// инициализируем объект для обработки ответа
 	queryItem := &queryStruct{}
 
 	// осуществляем запрос
-	queryItem.rows, queryItem.err = connectionItem.Connection.Query(query, args...)
+	queryItem.rows, queryItem.err = connectionItem.ConnectionPool.QueryContext(ctx, query, args...)
 	if queryItem.err != nil {
 		return &queryStruct{}, fmt.Errorf("unable send query: '%s', error: %v", query, queryItem.err)
 	}
@@ -346,7 +422,7 @@ func (connectionItem *ConnectionPoolItem) sendQueryForFormat(query string, args 
 func (connectionItem *ConnectionPoolItem) BeginTransaction() (TransactionStruct, error) {
 
 	// начинаем транзакцию
-	transactionItem, err := connectionItem.Connection.Begin()
+	transactionItem, err := connectionItem.ConnectionPool.Begin()
 	if err != nil {
 		return TransactionStruct{nil}, err
 	}
@@ -614,4 +690,54 @@ func (queryItem *queryStruct) handleError(err error) {
 	if err != nil {
 		queryItem.err = err
 	}
+}
+
+// готовим запрос для InsertOrUpdate
+func FormatInsertOrUpdate(tableName string, insert map[string]interface{}) (string, []interface{}) {
+
+	var keys, valueKeys, updateKeys string
+	var values []interface{}
+	for k, v := range insert {
+
+		keys += fmt.Sprintf("`%s` , ", k)
+		valueKeys += "? , "
+		updateKeys += fmt.Sprintf("`%s` = ? , ", k)
+		values = append(values, v)
+	}
+
+	values = append(values, values...)
+	keys = strings.TrimSuffix(keys, " , ")
+	valueKeys = strings.TrimSuffix(valueKeys, " , ")
+	updateKeys = strings.TrimSuffix(updateKeys, " , ")
+
+	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) on duplicate key update %s;",
+		tableName, keys, valueKeys, updateKeys)
+	return query, values
+}
+
+// готовим запрос для InsertArray
+func InsertArray(tableName string, columnList []string, insertDataList [][]interface{}) (string, []interface{}) {
+
+	var columnString, valueString string
+	for _, column := range columnList {
+		columnString += column + ", "
+	}
+
+	columnString = columnString[:len(columnString)-2]
+
+	var valueList []interface{}
+	for _, insertData := range insertDataList {
+
+		valueString += "("
+		for _, v := range insertData {
+
+			valueString += "?, "
+			valueList = append(valueList, v)
+		}
+		valueString = valueString[:len(valueString)-2] + "), "
+	}
+	valueString = valueString[:len(valueString)-2]
+
+	query := fmt.Sprintf("INSERT IGNORE INTO `%s` (%s) VALUES %s", tableName, columnString, valueString)
+	return query, valueList
 }

@@ -50,7 +50,7 @@ var rabbitConnectionStore = rabbitConnectionStorage{connectionMap: make(map[stri
 // -------------------------------------------------------
 
 // слушаем
-func (connectionItem *ConnectionStruct) Listen(user string, pass string, host string, port string, queueName string, exchangeName string, callback func(body []byte) []byte) {
+func (connectionItem *ConnectionStruct) Listen(queueName string, exchangeName string, callback func(body []byte) []byte) {
 
 	// слушаем соединение
 	listenConnection(connectionItem, queueName, exchangeName, callback)
