@@ -430,7 +430,7 @@ func (connectionItem *ConnectionPoolItem) BeginTransaction() (TransactionStruct,
 }
 
 // InsertArray функция для вставки массива записей в базу
-func (transactionItem *TransactionStruct) InsertArray(tableName string, columnList []string, insertDataList [][]interface{}, isIgnore bool) {
+func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, tableName string, columnList []string, insertDataList [][]interface{}, isIgnore bool) {
 
 	var columnString = ""
 	var valuesString = ""
@@ -449,18 +449,25 @@ func (transactionItem *TransactionStruct) InsertArray(tableName string, columnLi
 	if isIgnore {
 		ignore = "IGNORE "
 	}
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, columnString, valuesString)
 	stmt, _ := transactionItem.transaction.Prepare(query)
 	for _, v := range insertDataList {
-		_, _ = stmt.Exec(v...)
+		_, _ = stmt.ExecContext(queryContext, v...)
 	}
 }
 
 // FetchQuery получаем ответ после запроса
-func (transactionItem *TransactionStruct) FetchQuery(query string, args ...interface{}) (map[string]string, error) {
+func (transactionItem *TransactionStruct) FetchQuery(ctx context.Context, query string, args ...interface{}) (map[string]string, error) {
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// осуществляем запрос
-	queryItem, err := transactionItem.sendQueryForFormat(query, args...)
+	queryItem, err := transactionItem.sendQueryForFormat(queryContext, query, args...)
 	if err != nil {
 
 		log.Errorf("unable send query with transaction, error: %v", err)
@@ -472,10 +479,13 @@ func (transactionItem *TransactionStruct) FetchQuery(query string, args ...inter
 }
 
 // GetAll получаем массив
-func (transactionItem *TransactionStruct) GetAll(query string, args ...interface{}) (map[int]map[string]string, error) {
+func (transactionItem *TransactionStruct) GetAll(ctx context.Context, query string, args ...interface{}) (map[int]map[string]string, error) {
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// осуществляем запрос
-	queryItem, err := transactionItem.sendQueryForFormat(query, args...)
+	queryItem, err := transactionItem.sendQueryForFormat(queryContext, query, args...)
 	if err != nil {
 
 		log.Errorf("unable send query with transaction, error: %v", err)
@@ -488,10 +498,13 @@ func (transactionItem *TransactionStruct) GetAll(query string, args ...interface
 }
 
 // Update осуществляем запрос update
-func (transactionItem *TransactionStruct) Update(query string, args ...interface{}) (int64, error) {
+func (transactionItem *TransactionStruct) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
+
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
 
 	// проверяем соединение и осуществляем запрос
-	res, err := transactionItem.transaction.Exec(query, args...)
+	res, err := transactionItem.transaction.ExecContext(queryContext, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("query: %s, error: %v", query, err)
 	}
@@ -528,10 +541,10 @@ func (transactionItem *TransactionStruct) Rollback() error {
 }
 
 // ExecQuery осуществляем запрос
-func (transactionItem *TransactionStruct) ExecQuery(query string, args ...interface{}) error {
+func (transactionItem *TransactionStruct) ExecQuery(ctx context.Context, query string, args ...interface{}) error {
 
 	// осуществляем запрос
-	_, err := transactionItem.transaction.Exec(query, args...)
+	_, err := transactionItem.transaction.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("transaction query: %s, error: %v", query, err)
 	}
@@ -540,13 +553,13 @@ func (transactionItem *TransactionStruct) ExecQuery(query string, args ...interf
 }
 
 // осуществляем запрос, возвращаем объект для форматирования ответа
-func (transactionItem *TransactionStruct) sendQueryForFormat(query string, args ...interface{}) (*queryStruct, error) {
+func (transactionItem *TransactionStruct) sendQueryForFormat(ctx context.Context, query string, args ...interface{}) (*queryStruct, error) {
 
 	// инициализируем объект для обработки ответа
 	queryItem := &queryStruct{}
 
 	// осуществляем запрос
-	queryItem.rows, queryItem.err = transactionItem.transaction.Query(query, args...)
+	queryItem.rows, queryItem.err = transactionItem.transaction.QueryContext(ctx, query, args...)
 	if queryItem.err != nil {
 
 		_ = queryItem.rows.Close()
@@ -571,8 +584,39 @@ func (transactionItem *TransactionStruct) sendQueryForFormat(query string, args 
 	return queryItem, nil
 }
 
+// Insert осуществляем запрос insert
+func (transactionItem *TransactionStruct) Insert(ctx context.Context, tableName string, insert map[string]interface{}, isIgnore bool) error {
+
+	var keys, valueKeys string
+	var values []interface{}
+	for k, v := range insert {
+
+		keys += fmt.Sprintf("`%s` , ", k)
+		valueKeys += "? , "
+		values = append(values, v)
+	}
+
+	keys = strings.TrimSuffix(keys, " , ")
+	valueKeys = strings.TrimSuffix(valueKeys, " , ")
+
+	ignore := ""
+	if isIgnore {
+		ignore = "IGNORE "
+	}
+	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
+
+	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+
+	err := transactionItem.ExecQuery(queryCtx, query, values...)
+	if err != nil {
+		return fmt.Errorf("query: %s, error: %v", query, err)
+	}
+	return nil
+}
+
 // InsertOrUpdate осуществляем запрос insert or update
-func (transactionItem *TransactionStruct) InsertOrUpdate(tableName string, insert map[string]interface{}) error {
+func (transactionItem *TransactionStruct) InsertOrUpdate(ctx context.Context, tableName string, insert map[string]interface{}) error {
 
 	var keys, valueKeys, updateKeys string
 	var values []interface{}
@@ -589,10 +633,13 @@ func (transactionItem *TransactionStruct) InsertOrUpdate(tableName string, inser
 	valueKeys = strings.TrimSuffix(valueKeys, " , ")
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
 
+	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+
 	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) on duplicate key update %s;",
 		tableName, keys, valueKeys, updateKeys)
 
-	err := transactionItem.ExecQuery(query, values...)
+	err := transactionItem.ExecQuery(queryContext, query, values...)
 	if err != nil {
 		return fmt.Errorf("query: %s, error: %v", query, err)
 	}
