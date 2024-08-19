@@ -275,6 +275,19 @@ func DayStart() int64 {
 	return dayStart
 }
 
+// функция для получениея начала недели по времени
+func WeekStart(t time.Time) int64 {
+
+	weekday := time.Duration(t.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+
+	year, month, day := t.Date()
+	currentZeroDay := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	return currentZeroDay.Add(-1 * (weekday - 1) * 24 * time.Hour).Unix()
+}
+
 func IntToString(someInt int) string {
 	return fmt.Sprintf("%v", someInt)
 }
