@@ -19,8 +19,8 @@ import (
 
 // таймауты нужны, чтобы зависший запрос не занял надолго подключение к базе.
 // подключений ограниченное количество, а значит есть риск создать очередь запросов из-за зависших подключений
-const pingTimeout = 50 * time.Millisecond // таймаут для пинга
-const QueryTimeout = 5 * time.Second      // таймаут для запросов
+const pingTimeout = 200 * time.Millisecond // таймаут для пинга
+const QueryTimeout = 5 * time.Second       // таймаут для запросов
 
 // ConnectionPoolItem структура объекта подключения к базе данных
 type ConnectionPoolItem struct {
