@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 	"github.com/getCompassUtils/go_base_frame/api/system/functions"
 	"github.com/getCompassUtils/go_base_frame/api/system/log"
 	_ "github.com/go-sql-driver/mysql"
 	"strings"
 	"sync"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // -------------------------------------------------------
@@ -585,15 +588,30 @@ func (transactionItem *TransactionStruct) sendQueryForFormat(ctx context.Context
 }
 
 // Insert осуществляем запрос insert
-func (transactionItem *TransactionStruct) Insert(ctx context.Context, tableName string, insert map[string]interface{}, isIgnore bool) error {
+func (transactionItem *TransactionStruct) Insert(ctx context.Context, tableName string, insert interface{}, isIgnore bool) error {
 
 	var keys, valueKeys string
 	var values []interface{}
-	for k, v := range insert {
+
+	v := reflect.ValueOf(insert)
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	for i := 0; i < v.NumField(); i++ {
+
+		// получаем имя для вставки использования в mysql
+		k, ok := v.Type().Field(i).Tag.Lookup("sqlname")
+
+		// если не нашли - пропускаем
+		if !ok || k == "-" {
+			continue
+		}
 
 		keys += fmt.Sprintf("`%s` , ", k)
 		valueKeys += "? , "
-		values = append(values, v)
+		values = append(values, v.Field(i).Interface())
 	}
 
 	keys = strings.TrimSuffix(keys, " , ")
@@ -740,25 +758,40 @@ func (queryItem *queryStruct) handleError(err error) {
 }
 
 // готовим запрос для InsertOrUpdate
-func FormatInsertOrUpdate(tableName string, insert map[string]interface{}) (string, []interface{}) {
+func FormatInsertOrUpdate(tableName string, insert interface{}) (string, []interface{}) {
 
 	var keys, valueKeys, updateKeys string
 	var values []interface{}
-	for k, v := range insert {
+
+	v := reflect.ValueOf(insert)
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	for i := 0; i < v.NumField(); i++ {
+
+		// получаем имя для вставки использования в mysql
+		k, ok := v.Type().Field(i).Tag.Lookup("sqlname")
+
+		// если не нашли - пропускаем
+		if !ok || k == "-" {
+			continue
+		}
 
 		keys += fmt.Sprintf("`%s` , ", k)
 		valueKeys += "? , "
 		updateKeys += fmt.Sprintf("`%s` = ? , ", k)
-		values = append(values, v)
+		values = append(values, v.Field(i).Interface())
 	}
 
 	values = append(values, values...)
+
 	keys = strings.TrimSuffix(keys, " , ")
 	valueKeys = strings.TrimSuffix(valueKeys, " , ")
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
 
-	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) on duplicate key update %s;",
-		tableName, keys, valueKeys, updateKeys)
+	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) ON DUPLICATE KEY UPDATE %s;", tableName, keys, valueKeys, updateKeys)
 	return query, values
 }
 
