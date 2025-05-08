@@ -30,14 +30,26 @@ func Encrypt(src string, cipherMethod string, key string, iv string) (string, er
 	// устанавливаем длину ключа
 	keyLength := cipherMethodKeyLength[cipherMethod]
 
+	keyByte := []byte(key)
+
 	// проверяем, что переданный ключ подходит
-	if len(key) != keyLength {
-		log.Errorf("you should pass 32 bit key")
-		return "", fmt.Errorf("you should pass 32 bit key")
+	// если он меньше - дополняем нулями
+	if len(keyByte) < keyLength {
+
+		nul := make([]byte, keyLength-len(key))
+		for i := 0; i < keyLength-len(key); i++ {
+			nul[i] = 0
+		}
+		keyByte = append(keyByte, nul...)
+	}
+
+	// если он больше - обрезаем
+	if len(key) > keyLength {
+		keyByte = keyByte[:keyLength]
 	}
 
 	//
-	block, err := aes.NewCipher([]byte(key))
+	block, err := aes.NewCipher(keyByte)
 	if err != nil {
 		fmt.Println("key error1", err)
 	}

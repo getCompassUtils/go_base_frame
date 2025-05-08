@@ -441,9 +441,37 @@ func ListIntersection(s1, s2 []string) (inter []string) {
 	return
 }
 
+// SliceDiff получить расхождение списков
+func SliceDiff(a, b []int64) []int64 {
+	mb := make(map[int64]struct{}, len(b))
+	for _, x := range b {
+		mb[x] = struct{}{}
+	}
+	var diff []int64
+	for _, x := range a {
+		if _, found := mb[x]; !found {
+			diff = append(diff, x)
+		}
+	}
+	return diff
+}
+
 // удалить дубликаты из списка
 func RemoveDups(elements []string) (nodups []string) {
 	encountered := make(map[string]bool)
+	for _, element := range elements {
+		if !encountered[element] {
+			nodups = append(nodups, element)
+			encountered[element] = true
+		}
+	}
+	return
+}
+
+// удалить дубликаты из списка (на generic)
+func RemoveDuplicates[T comparable](elements []T) (nodups []T) {
+
+	encountered := make(map[T]bool)
 	for _, element := range elements {
 		if !encountered[element] {
 			nodups = append(nodups, element)
