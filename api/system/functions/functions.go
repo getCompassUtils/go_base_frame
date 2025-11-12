@@ -275,6 +275,33 @@ func DayStart() int64 {
 	return dayStart
 }
 
+// функция для получния текущего часа с параметром
+func HourStartWithParam(t time.Time) int64 {
+
+	year := t.Year()
+	month := t.Month()
+	day := t.Day()
+	hour := t.Hour()
+	location := t.Location()
+
+	hourStart := time.Date(year, month, day, hour, 0, 0, 0, location).Unix()
+
+	return hourStart
+}
+
+// функция для получениея текущего дня с параметром
+func DayStartWithParam(t time.Time) int64 {
+
+	year := t.Year()
+	month := t.Month()
+	day := t.Day()
+	location := t.Location()
+
+	dayStart := time.Date(year, month, day, 0, 0, 0, 0, location).Unix()
+
+	return dayStart
+}
+
 // функция для получениея начала недели по времени
 func WeekStart(t time.Time) int64 {
 
