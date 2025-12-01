@@ -3,13 +3,14 @@ package tester
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
+
 	"github.com/getCompassUtils/go_base_frame/api/system/flags"
 	"github.com/getCompassUtils/go_base_frame/api/system/functions"
 	"github.com/getCompassUtils/go_base_frame/api/system/log"
 	"github.com/getCompassUtils/go_base_frame/tests/tester/assert"
 	"github.com/getCompassUtils/go_base_frame/tests/tester/tcp"
-	"os"
-	"runtime"
 )
 
 // выполняется при инициализации пакета

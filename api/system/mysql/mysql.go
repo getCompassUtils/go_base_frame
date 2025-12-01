@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
-	"github.com/getCompassUtils/go_base_frame/api/system/functions"
-	"github.com/getCompassUtils/go_base_frame/api/system/log"
-	_ "github.com/go-sql-driver/mysql"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/getCompassUtils/go_base_frame/api/system/functions"
+	"github.com/getCompassUtils/go_base_frame/api/system/log"
+	"github.com/getCompassUtils/go_base_frame/api/system/server"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -285,6 +285,11 @@ func (connectionItem *ConnectionPoolItem) Insert(ctx context.Context, tableName 
 	}
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return 0, nil
+	}
+
 	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 
@@ -314,6 +319,11 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, ta
 	valueKeys = strings.TrimSuffix(valueKeys, " , ")
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return nil
+	}
+
 	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) on duplicate key update %s;",
 		tableName, keys, valueKeys, updateKeys)
 
@@ -331,6 +341,11 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, ta
 // Update осуществляем запрос update
 func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return 0, nil
+	}
+
 	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 
@@ -346,6 +361,11 @@ func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query stri
 
 // Query осуществляем запрос
 func (connectionItem *ConnectionPoolItem) Query(ctx context.Context, query string, args ...interface{}) error {
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() && isWriteRows(query) {
+		return nil
+	}
 
 	// проверяем соединение и осуществляем запрос
 	_, err := connectionItem.ConnectionPool.ExecContext(ctx, query, args...)
@@ -381,6 +401,11 @@ func (connectionItem *ConnectionPoolItem) InsertArray(ctx context.Context, table
 
 	query := fmt.Sprintf("INSERT IGNORE INTO `%s` (%s) VALUES %s", tableName, columnString, valueString)
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return nil
+	}
+
 	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 
@@ -392,6 +417,11 @@ func (connectionItem *ConnectionPoolItem) sendQueryForFormat(ctx context.Context
 
 	// инициализируем объект для обработки ответа
 	queryItem := &queryStruct{}
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() && isWriteRows(query) {
+		return queryItem, nil
+	}
 
 	// осуществляем запрос
 	queryItem.rows, queryItem.err = connectionItem.ConnectionPool.QueryContext(ctx, query, args...)
@@ -453,6 +483,11 @@ func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, table
 		ignore = "IGNORE "
 	}
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return
+	}
+
 	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 
@@ -465,6 +500,11 @@ func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, table
 
 // FetchQuery получаем ответ после запроса
 func (transactionItem *TransactionStruct) FetchQuery(ctx context.Context, query string, args ...interface{}) (map[string]string, error) {
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() && isWriteRows(query) {
+		return map[string]string{}, nil
+	}
 
 	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
@@ -502,6 +542,11 @@ func (transactionItem *TransactionStruct) GetAll(ctx context.Context, query stri
 
 // Update осуществляем запрос update
 func (transactionItem *TransactionStruct) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return 0, nil
+	}
 
 	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
@@ -546,6 +591,11 @@ func (transactionItem *TransactionStruct) Rollback() error {
 // ExecQuery осуществляем запрос
 func (transactionItem *TransactionStruct) ExecQuery(ctx context.Context, query string, args ...interface{}) error {
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() && isWriteRows(query) {
+		return nil
+	}
+
 	// осуществляем запрос
 	_, err := transactionItem.transaction.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -560,6 +610,11 @@ func (transactionItem *TransactionStruct) sendQueryForFormat(ctx context.Context
 
 	// инициализируем объект для обработки ответа
 	queryItem := &queryStruct{}
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() && isWriteRows(query) {
+		return queryItem, nil
+	}
 
 	// осуществляем запрос
 	queryItem.rows, queryItem.err = transactionItem.transaction.QueryContext(ctx, query, args...)
@@ -623,6 +678,11 @@ func (transactionItem *TransactionStruct) Insert(ctx context.Context, tableName 
 	}
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
 
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return nil
+	}
+
 	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 
@@ -650,6 +710,11 @@ func (transactionItem *TransactionStruct) InsertOrUpdate(ctx context.Context, ta
 	keys = strings.TrimSuffix(keys, " , ")
 	valueKeys = strings.TrimSuffix(valueKeys, " , ")
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() {
+		return nil
+	}
 
 	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
@@ -755,6 +820,25 @@ func (queryItem *queryStruct) handleError(err error) {
 	if err != nil {
 		queryItem.err = err
 	}
+}
+
+// проверяет является ли запрос query изменяющим таблицу
+func isWriteRows(query string) bool {
+	query = strings.ToUpper(query)
+
+	writeKeywords := []string{
+		"INSERT", "UPDATE", "DELETE", "REPLACE",
+		"CREATE", "DROP", "ALTER", "TRUNCATE",
+		"LOCK", "UNLOCK",
+	}
+
+	for _, kw := range writeKeywords {
+		if strings.HasPrefix(query, kw+" ") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // готовим запрос для InsertOrUpdate

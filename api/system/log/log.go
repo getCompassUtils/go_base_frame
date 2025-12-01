@@ -2,12 +2,13 @@ package log
 
 import (
 	"fmt"
-	"github.com/getCompassUtils/go_base_frame/api/system/functions"
 	"log"
 	"os"
 	"runtime"
 	"strings"
 	"syscall"
+
+	"github.com/getCompassUtils/go_base_frame/api/system/functions"
 )
 
 // -------------------------------------------------------
