@@ -30,6 +30,7 @@ const QueryTimeout = 5 * time.Second       // таймаут для запрос
 type ConnectionPoolItem struct {
 	ConnectionPool *sql.DB
 	createdAt      int64
+	dbKey          string
 }
 
 // объявляем хранилище
@@ -38,6 +39,7 @@ var mysqlConnectionPoolList = sync.Map{}
 // TransactionStruct структура транзакции
 type TransactionStruct struct {
 	transaction *sql.Tx
+	dbKey       string
 }
 
 // структура для форматирования ответа
@@ -60,6 +62,7 @@ func ReplaceConnection(db string, conn *sql.DB) {
 	connectionPoolItem := ConnectionPoolItem{
 		ConnectionPool: conn,
 		createdAt:      functions.GetCurrentTimeStamp(),
+		dbKey:          db,
 	}
 
 	// перезаписываем объект подключения
@@ -141,6 +144,7 @@ func openMysqlConnectionPool(db string, host string, user string, pass string, m
 	connectionPoolItem := ConnectionPoolItem{
 		ConnectionPool: connectionPool,
 		createdAt:      functions.GetCurrentTimeStamp(),
+		dbKey:          db,
 	}
 
 	return &connectionPoolItem, err
@@ -287,7 +291,7 @@ func (connectionItem *ConnectionPoolItem) Insert(ctx context.Context, tableName 
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && !isAllowWriteTable(connectionItem.dbKey, query) {
 		return 0, nil
 	}
 
@@ -324,7 +328,7 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, ta
 		tableName, keys, valueKeys, updateKeys)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && !isAllowWriteTable(connectionItem.dbKey, query) {
 		return nil
 	}
 
@@ -343,7 +347,7 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, ta
 func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && !isAllowWriteTable(connectionItem.dbKey, query) {
 		return 0, nil
 	}
 
@@ -364,7 +368,7 @@ func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query stri
 func (connectionItem *ConnectionPoolItem) Query(ctx context.Context, query string, args ...interface{}) error {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(connectionItem.dbKey, query) {
 		return nil
 	}
 
@@ -403,7 +407,7 @@ func (connectionItem *ConnectionPoolItem) InsertArray(ctx context.Context, table
 	query := fmt.Sprintf("INSERT IGNORE INTO `%s` (%s) VALUES %s", tableName, columnString, valueString)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && !isAllowWriteTable(connectionItem.dbKey, query) {
 		return nil
 	}
 
@@ -420,7 +424,7 @@ func (connectionItem *ConnectionPoolItem) sendQueryForFormat(ctx context.Context
 	queryItem := &queryStruct{}
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(connectionItem.dbKey, query) {
 		return queryItem, nil
 	}
 
@@ -458,9 +462,9 @@ func (connectionItem *ConnectionPoolItem) BeginTransaction() (TransactionStruct,
 	// начинаем транзакцию
 	transactionItem, err := connectionItem.ConnectionPool.Begin()
 	if err != nil {
-		return TransactionStruct{nil}, err
+		return TransactionStruct{nil, connectionItem.dbKey}, err
 	}
-	return TransactionStruct{transactionItem}, nil
+	return TransactionStruct{transactionItem, connectionItem.dbKey}, nil
 }
 
 // InsertArray функция для вставки массива записей в базу
@@ -485,7 +489,7 @@ func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, table
 	}
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(tableName) {
+	if server.IsReserveServer() && !isAllowWriteTable(transactionItem.dbKey, tableName) {
 		return
 	}
 
@@ -503,7 +507,7 @@ func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, table
 func (transactionItem *TransactionStruct) FetchQuery(ctx context.Context, query string, args ...interface{}) (map[string]string, error) {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(transactionItem.dbKey, query) {
 		return map[string]string{}, nil
 	}
 
@@ -545,7 +549,7 @@ func (transactionItem *TransactionStruct) GetAll(ctx context.Context, query stri
 func (transactionItem *TransactionStruct) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && !isAllowWriteTable(transactionItem.dbKey, query) {
 		return 0, nil
 	}
 
@@ -593,7 +597,7 @@ func (transactionItem *TransactionStruct) Rollback() error {
 func (transactionItem *TransactionStruct) ExecQuery(ctx context.Context, query string, args ...interface{}) error {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(transactionItem.dbKey, query) {
 		return nil
 	}
 
@@ -613,7 +617,7 @@ func (transactionItem *TransactionStruct) sendQueryForFormat(ctx context.Context
 	queryItem := &queryStruct{}
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(transactionItem.dbKey, query) {
 		return queryItem, nil
 	}
 
@@ -680,7 +684,7 @@ func (transactionItem *TransactionStruct) Insert(ctx context.Context, tableName 
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(query) {
+	if server.IsReserveServer() && !isAllowWriteTable(transactionItem.dbKey, query) {
 		return nil
 	}
 
@@ -713,7 +717,7 @@ func (transactionItem *TransactionStruct) InsertOrUpdate(ctx context.Context, ta
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && !isAllowWriteTable(tableName) {
+	if server.IsReserveServer() && !isAllowWriteTable(transactionItem.dbKey, tableName) {
 		return nil
 	}
 
@@ -843,19 +847,32 @@ func isWriteRows(query string) bool {
 }
 
 // проверяем, что в запросе query есть таблица из allow списка
-func isAllowWriteTable(query string) bool {
+func isAllowWriteTable(dbKey string, query string) bool {
 
 	// нормализуем регистр и убираем `, чтобы ловить и `db`.`table`
 	query = strings.ToLower(query)
 	query = strings.ReplaceAll(query, "`", "")
 
+	log.Errorf("dbKey: %s; query: %s", dbKey, query)
+
+	allowDbList := []string{
+		"pivot_company_service",
+		"domino_service",
+		"mysql",
+	}
+
 	allowTableList := []string{
-		"pivot_company_service.port_registry_%s",
-		"pivot_company_service.domino_registry",
-		"domino_service.port_registry",
-		"mysql.user",
-		"mysql.db",
-		"mysql.tables_priv",
+		"port_registry_%s",
+		"domino_registry",
+		"port_registry",
+		"user",
+		"db",
+		"tables_priv",
+	}
+
+	isDbAllowed, _ := functions.InArray(dbKey, allowDbList)
+	if !isDbAllowed {
+		return false
 	}
 
 	for _, pattern := range allowTableList {
@@ -870,7 +887,7 @@ func isAllowWriteTable(query string) bool {
 			regexStr := `\b` + regexp.QuoteMeta(base) + `[a-z0-9_]+` + `\b`
 			re := regexp.MustCompile(regexStr)
 
-			if re.MatchString(query) {
+			if re.MatchString(query) && isDbAllowed {
 				return true
 			}
 			continue
@@ -880,7 +897,7 @@ func isAllowWriteTable(query string) bool {
 		regexStr := `\b` + regexp.QuoteMeta(pattern) + `\b`
 		re := regexp.MustCompile(regexStr)
 
-		if re.MatchString(query) {
+		if re.MatchString(query) && isDbAllowed {
 			return true
 		}
 	}
