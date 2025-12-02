@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -286,7 +287,7 @@ func (connectionItem *ConnectionPoolItem) Insert(ctx context.Context, tableName 
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(query) {
 		return 0, nil
 	}
 
@@ -319,13 +320,13 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, ta
 	valueKeys = strings.TrimSuffix(valueKeys, " , ")
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
 
-	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
-		return nil
-	}
-
 	query := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s) on duplicate key update %s;",
 		tableName, keys, valueKeys, updateKeys)
+
+	// если резервный и запрос меняет бд
+	if server.IsReserveServer() && !isAllowWriteTable(query) {
+		return nil
+	}
 
 	queryCtx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
@@ -342,7 +343,7 @@ func (connectionItem *ConnectionPoolItem) InsertOrUpdate(ctx context.Context, ta
 func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(query) {
 		return 0, nil
 	}
 
@@ -363,7 +364,7 @@ func (connectionItem *ConnectionPoolItem) Update(ctx context.Context, query stri
 func (connectionItem *ConnectionPoolItem) Query(ctx context.Context, query string, args ...interface{}) error {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
 		return nil
 	}
 
@@ -402,7 +403,7 @@ func (connectionItem *ConnectionPoolItem) InsertArray(ctx context.Context, table
 	query := fmt.Sprintf("INSERT IGNORE INTO `%s` (%s) VALUES %s", tableName, columnString, valueString)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(query) {
 		return nil
 	}
 
@@ -419,7 +420,7 @@ func (connectionItem *ConnectionPoolItem) sendQueryForFormat(ctx context.Context
 	queryItem := &queryStruct{}
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
 		return queryItem, nil
 	}
 
@@ -484,7 +485,7 @@ func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, table
 	}
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(tableName) {
 		return
 	}
 
@@ -502,7 +503,7 @@ func (transactionItem *TransactionStruct) InsertArray(ctx context.Context, table
 func (transactionItem *TransactionStruct) FetchQuery(ctx context.Context, query string, args ...interface{}) (map[string]string, error) {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
 		return map[string]string{}, nil
 	}
 
@@ -544,7 +545,7 @@ func (transactionItem *TransactionStruct) GetAll(ctx context.Context, query stri
 func (transactionItem *TransactionStruct) Update(ctx context.Context, query string, args ...interface{}) (int64, error) {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(query) {
 		return 0, nil
 	}
 
@@ -592,7 +593,7 @@ func (transactionItem *TransactionStruct) Rollback() error {
 func (transactionItem *TransactionStruct) ExecQuery(ctx context.Context, query string, args ...interface{}) error {
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
 		return nil
 	}
 
@@ -612,7 +613,7 @@ func (transactionItem *TransactionStruct) sendQueryForFormat(ctx context.Context
 	queryItem := &queryStruct{}
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() && isWriteRows(query) {
+	if server.IsReserveServer() && isWriteRows(query) && !isAllowWriteTable(query) {
 		return queryItem, nil
 	}
 
@@ -679,7 +680,7 @@ func (transactionItem *TransactionStruct) Insert(ctx context.Context, tableName 
 	query := fmt.Sprintf("INSERT %sINTO %s (%s) VALUES (%s)", ignore, tableName, keys, valueKeys)
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(query) {
 		return nil
 	}
 
@@ -712,7 +713,7 @@ func (transactionItem *TransactionStruct) InsertOrUpdate(ctx context.Context, ta
 	updateKeys = strings.TrimSuffix(updateKeys, " , ")
 
 	// если резервный и запрос меняет бд
-	if server.IsReserveServer() {
+	if server.IsReserveServer() && !isAllowWriteTable(tableName) {
 		return nil
 	}
 
@@ -838,6 +839,53 @@ func isWriteRows(query string) bool {
 		}
 	}
 
+	return false
+}
+
+// проверяем, что в запросе query есть таблица из allow списка
+func isAllowWriteTable(query string) bool {
+
+	// нормализуем регистр и убираем `, чтобы ловить и `db`.`table`
+	query = strings.ToLower(query)
+	query = strings.ReplaceAll(query, "`", "")
+
+	allowTableList := []string{
+		"pivot_company_service.port_registry_%s",
+		"pivot_company_service.domino_registry",
+		"domino_service.port_registry",
+		"mysql.user",
+		"mysql.db",
+		"mysql.tables_priv",
+	}
+
+	for _, pattern := range allowTableList {
+
+		// шаблон с %s, например pivot_company_service.port_registry_%s
+		if strings.Contains(pattern, "%s") {
+
+			// база до %s, например "pivot_company_service.port_registry_"
+			base := strings.ReplaceAll(pattern, "%s", "")
+
+			// ищем что-то вроде pivot_company_service.port_registry_d1 / _d2 и прочее
+			regexStr := `\b` + regexp.QuoteMeta(base) + `[a-z0-9_]+` + `\b`
+			re := regexp.MustCompile(regexStr)
+
+			if re.MatchString(query) {
+				return true
+			}
+			continue
+		}
+
+		// точное имя таблицы из allow
+		regexStr := `\b` + regexp.QuoteMeta(pattern) + `\b`
+		re := regexp.MustCompile(regexStr)
+
+		if re.MatchString(query) {
+			return true
+		}
+	}
+
+	// не нашли allow-таблицу в запросе
 	return false
 }
 
