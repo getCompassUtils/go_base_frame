@@ -853,11 +853,8 @@ func isAllowWriteTable(dbKey string, query string) bool {
 	query = strings.ToLower(query)
 	query = strings.ReplaceAll(query, "`", "")
 
-	log.Errorf("dbKey: %s; query: %s", dbKey, query)
-
 	allowDbList := []string{
 		"pivot_company_service",
-		"domino_service",
 		"mysql",
 	}
 

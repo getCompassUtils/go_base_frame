@@ -149,6 +149,10 @@ func GetServiceLabel() string {
 	return serviceLabel
 }
 
+type ServiceConfig struct {
+	Master bool `json:"master"`
+}
+
 // проверяем резервный ли сервер
 func IsReserveServer() bool {
 	if !IsOnPremise() {
@@ -177,11 +181,12 @@ func IsReserveServer() bool {
 		return false
 	}
 
-	// структура JSON - companies_relationship_config[$service_label]["master"]
-	// map[string]map[string]bool
 	data := []byte(strData)
-	var cfg map[string]map[string]bool
-	if err := json.Unmarshal(data, &cfg); err != nil {
+
+	// было: var cfg map[string]map[string]bool
+	var cfg map[string]ServiceConfig
+
+	if err = json.Unmarshal(data, &cfg); err != nil {
 		return false
 	}
 
@@ -190,10 +195,7 @@ func IsReserveServer() bool {
 		return true
 	}
 
-	master, ok := serviceCfg["master"]
-	if !ok {
-		return true
-	}
+	master := serviceCfg.Master
 
 	if !master {
 		return true
