@@ -862,9 +862,7 @@ func isAllowWriteTable(dbKey string, query string) bool {
 	}
 
 	allowTableList := []string{
-		"port_registry_%s",
 		"domino_registry",
-		"port_registry",
 		"user",
 		"db",
 		"tables_priv",
@@ -877,13 +875,13 @@ func isAllowWriteTable(dbKey string, query string) bool {
 
 	for _, pattern := range allowTableList {
 
-		// шаблон с %s, например pivot_company_service.port_registry_%s
+		// шаблон с %s, например pivot_company_service.table_%s
 		if strings.Contains(pattern, "%s") {
 
-			// база до %s, например "pivot_company_service.port_registry_"
+			// база до %s, например "table_"
 			base := strings.ReplaceAll(pattern, "%s", "")
 
-			// ищем что-то вроде pivot_company_service.port_registry_d1 / _d2 и прочее
+			// ищем что-то вроде table_d1 / table__d2 и прочее
 			regexStr := `\b` + regexp.QuoteMeta(base) + `[a-z0-9_]+` + `\b`
 			re := regexp.MustCompile(regexStr)
 
