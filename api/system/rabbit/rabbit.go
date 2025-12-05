@@ -2,11 +2,12 @@ package rabbit
 
 import (
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/getCompassUtils/go_base_frame/api/system/functions"
 	"github.com/getCompassUtils/go_base_frame/api/system/log"
 	"github.com/streadway/amqp"
-	"sync"
-	"time"
 )
 
 const (

@@ -244,7 +244,7 @@ func InArray(val interface{}, array interface{}) (exists bool, index int) {
 	return
 }
 
-// функция для получния текущего часа
+// функция для получения текущего часа
 func HourStart() int64 {
 
 	timeObj := time.Now()
@@ -275,7 +275,7 @@ func DayStart() int64 {
 	return dayStart
 }
 
-// функция для получния текущего часа с параметром
+// функция для получения текущего часа с параметром
 func HourStartWithParam(t time.Time) int64 {
 
 	year := t.Year()

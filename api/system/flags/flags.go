@@ -2,9 +2,10 @@ package flags
 
 import (
 	"flag"
-	"github.com/getCompassUtils/go_base_frame/api/system/log"
 	"os"
 	"path/filepath"
+
+	"github.com/getCompassUtils/go_base_frame/api/system/log"
 )
 
 // -------------------------------------------------------

@@ -1,7 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
+	"unicode/utf8"
+
+	"github.com/getCompassUtils/go_base_frame/api/system/fileutils"
 	"github.com/getCompassUtils/go_base_frame/api/system/functions"
 )
 
@@ -37,8 +41,15 @@ var productGroupTagList = []string{
 // мапа с тегами серверов
 var serverTagMap map[string]bool
 
+// лейбл сервера
+var serviceLabel string
+
+// путь до конфига
+var dominoConfigPath string
+var companiesRelationshipFileName string
+
 // инициализировать теги сервера
-func Init(tl []string) error {
+func Init(tl []string, sl string, dcp string, crfn string) error {
 
 	if len(tl) < 2 {
 		return fmt.Errorf("server tag list is invalid")
@@ -56,6 +67,9 @@ func Init(tl []string) error {
 	for _, value := range tl {
 		serverTagMap[value] = true
 	}
+	serviceLabel = sl
+	dominoConfigPath = dcp
+	companiesRelationshipFileName = crfn
 
 	return nil
 }
@@ -124,6 +138,66 @@ func IsTest() bool {
 func hasTag(tag string) bool {
 
 	if _, ok := serverTagMap[tag]; ok {
+		return true
+	}
+
+	return false
+}
+
+// возвращаем serviceLabel
+func GetServiceLabel() string {
+	return serviceLabel
+}
+
+type ServiceConfig struct {
+	Master bool `json:"master"`
+}
+
+// проверяем резервный ли сервер
+func IsReserveServer() bool {
+	if !IsOnPremise() {
+		return false
+	}
+
+	if utf8.RuneCountInString(serviceLabel) == 0 {
+		return false
+	}
+
+	if companiesRelationshipFileName == "" {
+		return false
+	}
+
+	companiesRelationshipFile, err := fileutils.Init(dominoConfigPath, companiesRelationshipFileName)
+	if err != nil {
+		return false
+	}
+
+	if !fileutils.Exists(companiesRelationshipFile.GetPath()) {
+		return false
+	}
+
+	strData, err := companiesRelationshipFile.Read()
+	if err != nil {
+		return false
+	}
+
+	data := []byte(strData)
+
+	// было: var cfg map[string]map[string]bool
+	var cfg map[string]ServiceConfig
+
+	if err = json.Unmarshal(data, &cfg); err != nil {
+		return false
+	}
+
+	serviceCfg, ok := cfg[serviceLabel]
+	if !ok {
+		return true
+	}
+
+	master := serviceCfg.Master
+
+	if !master {
 		return true
 	}
 
